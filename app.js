@@ -13,9 +13,16 @@ const state = loadState();
 
 function createDefaultState() {
 	return {
-		gameActive: false,
+		gameActive: true,
 		catalog: moduleCatalogSeed.map((module) => ({ ...module })),
 		decks: [createDeckState(1)],
+		playDeckId: null,
+		sectionOpen: {
+			modules: false,
+			decks: false,
+			play: false,
+		},
+		openDeckIds: [],
 		editingModuleId: null,
 		log: [],
 	};
@@ -36,11 +43,25 @@ function loadState() {
 		}
 
 		const parsed = JSON.parse(serialized);
+		const parsedDecks = Array.isArray(parsed?.decks) && parsed.decks.length > 0 ? parsed.decks.map(normalizeDeck) : defaults.decks;
+		const validDeckIds = new Set(parsedDecks.map((deck) => deck.id));
+		const parsedSectionOpen = parsed?.sectionOpen;
+		const sectionOpen = {
+			modules: Boolean(parsedSectionOpen?.modules),
+			decks: Boolean(parsedSectionOpen?.decks),
+			play: Boolean(parsedSectionOpen?.play),
+		};
+		const openDeckIds = Array.isArray(parsed?.openDeckIds)
+			? parsed.openDeckIds.map(String).filter((deckId) => validDeckIds.has(deckId))
+			: [];
 
 		return {
-			gameActive: Boolean(parsed?.gameActive),
+			gameActive: true,
 			catalog: Array.isArray(parsed?.catalog) && parsed.catalog.length > 0 ? parsed.catalog.map(normalizeCatalogModule) : defaults.catalog,
-			decks: Array.isArray(parsed?.decks) && parsed.decks.length > 0 ? parsed.decks.map(normalizeDeck) : defaults.decks,
+			decks: parsedDecks,
+			playDeckId: typeof parsed?.playDeckId === 'string' && validDeckIds.has(String(parsed.playDeckId)) ? String(parsed.playDeckId) : null,
+			sectionOpen,
+			openDeckIds,
 			editingModuleId: null,
 			log: Array.isArray(parsed?.log) ? parsed.log.slice(0, 8).map(normalizeLogItem) : [],
 		};
@@ -59,6 +80,9 @@ function saveState() {
 			gameActive: state.gameActive,
 			catalog: state.catalog,
 			decks: state.decks,
+			playDeckId: state.playDeckId,
+			sectionOpen: state.sectionOpen,
+			openDeckIds: state.openDeckIds,
 			log: state.log,
 		}));
 	} catch {
@@ -107,6 +131,7 @@ function normalizeDeck(deck, index) {
 		name: String(deck?.name ?? `Deck ${index + 1}`),
 		entries: Array.isArray(deck?.entries) ? deck.entries.map(normalizeModuleEntry) : [],
 		lastDrawEntryId: deck?.lastDrawEntryId ? String(deck.lastDrawEntryId) : null,
+		drawZoneHue: Number.isFinite(Number(deck?.drawZoneHue)) ? Number(deck.drawZoneHue) : Math.floor(Math.random() * 360),
 		drawHistory,
 	};
 }
@@ -133,8 +158,14 @@ function createDeckState(index) {
 		name: `Deck ${index}`,
 		entries: [],
 		lastDrawEntryId: null,
+		drawZoneHue: Math.floor(Math.random() * 360),
 		drawHistory: [],
 	};
+}
+
+function getDrawZoneAccent(deck) {
+	const hue = Number.isFinite(deck?.drawZoneHue) ? deck.drawZoneHue : 200;
+	return `hsla(${hue} 82% 58% / 0.34)`;
 }
 
 function createModuleInstance(module, count) {
@@ -213,24 +244,92 @@ function addLog(message) {
 	state.log = state.log.slice(0, 8);
 }
 
-function createDeck() {
-	state.decks.push(createDeckState(state.decks.length + 1));
-	addLog(`${state.decks[state.decks.length - 1].name} added.`);
+function createDeck(name) {
+	const deckName = String(name ?? '').trim() || `Deck ${state.decks.length + 1}`;
+	const nextDeck = createDeckState(state.decks.length + 1);
+	nextDeck.name = deckName;
+	state.decks.push(nextDeck);
+	addLog(`${nextDeck.name} added.`);
 	render();
 }
 
-function startGame() {
-	const playableDecks = state.decks.filter((deck) => deck.entries.length > 0);
+function isSectionOpen(sectionName) {
+	return Boolean(state.sectionOpen?.[sectionName]);
+}
 
-	if (playableDecks.length === 0) {
-		addLog('Add at least one module to a deck before starting the game.');
-		render();
+function toggleSection(sectionName) {
+	if (!state.sectionOpen || !(sectionName in state.sectionOpen)) {
 		return;
 	}
 
-	state.gameActive = true;
-	addLog('Game started. Tap any deck to draw from a random non-empty module.');
+	state.sectionOpen[sectionName] = !state.sectionOpen[sectionName];
 	render();
+}
+
+function isDeckOpen(deckId) {
+	return Array.isArray(state.openDeckIds) && state.openDeckIds.includes(deckId);
+}
+
+function toggleDeck(deckId) {
+	if (!Array.isArray(state.openDeckIds)) {
+		state.openDeckIds = [];
+	}
+
+	if (state.openDeckIds.includes(deckId)) {
+		state.openDeckIds = state.openDeckIds.filter((id) => id !== deckId);
+	} else {
+		state.openDeckIds = [...state.openDeckIds, deckId];
+	}
+
+	render();
+}
+
+function getPlayDeck() {
+	return state.decks.find((deck) => deck.id === state.playDeckId) ?? null;
+}
+
+function setPlayDeck(deckId) {
+	const selectedDeck = state.decks.find((deck) => deck.id === deckId) ?? null;
+	state.playDeckId = selectedDeck ? selectedDeck.id : null;
+
+	if (selectedDeck && !isDeckOpen(selectedDeck.id)) {
+		state.openDeckIds = [...state.openDeckIds, selectedDeck.id];
+	}
+
+	addLog(selectedDeck ? `${selectedDeck.name} moved to the play area.` : 'Play area cleared.');
+	render();
+}
+
+function clearPlayDeck(deckId) {
+	if (state.playDeckId !== deckId) {
+		return;
+	}
+
+	state.playDeckId = null;
+	const deck = state.decks.find((entry) => entry.id === deckId);
+	addLog(deck ? `${deck.name} removed from the play area.` : 'Play area cleared.');
+	render();
+}
+
+function renderCollapsibleSection(sectionName, eyebrow, title, content) {
+	const isOpen = isSectionOpen(sectionName);
+
+	return `
+		<section class="collapsible panel ${isOpen ? 'is-open' : ''}" data-section="${sectionName}">
+			<div class="collapsible__summary">
+				<div>
+					<p class="eyebrow">${escapeHtml(eyebrow)}</p>
+					<h2>${escapeHtml(title)}</h2>
+				</div>
+				<button type="button" class="collapsible__toggle" data-action="toggle-section" data-section="${sectionName}" aria-label="Toggle ${escapeHtml(title)} section">
+					<span class="collapsible__chevron" aria-hidden="true"></span>
+				</button>
+			</div>
+			<div class="collapsible__content ${isOpen ? '' : 'is-collapsed'}">
+				${content}
+			</div>
+		</section>
+	`;
 }
 
 function addModulePresetToCatalog(module) {
@@ -268,6 +367,15 @@ function updateModulePreset(moduleId, update) {
 	module.name = update.name;
 	module.defaultCount = update.defaultCount;
 	module.color = update.color;
+
+	for (const deck of state.decks) {
+		for (const entry of deck.entries) {
+			if (entry.moduleId === moduleId) {
+				entry.name = update.name;
+				entry.color = update.color;
+			}
+		}
+	}
 
 	state.editingModuleId = null;
 	addLog(`${module.name} preset updated.`);
@@ -308,6 +416,31 @@ function addModuleToDeck(deckId, moduleId, count) {
 	render();
 }
 
+function removeModuleFromDeck(deckId, entryId) {
+	const deck = state.decks.find((entry) => entry.id === deckId);
+
+	if (!deck) {
+		return;
+	}
+
+	const moduleIndex = deck.entries.findIndex((entry) => entry.id === entryId);
+
+	if (moduleIndex === -1) {
+		addLog('Could not remove that module from the deck.');
+		render();
+		return;
+	}
+
+	const [removedEntry] = deck.entries.splice(moduleIndex, 1);
+
+	deck.drawHistory = deck.drawHistory.filter((item) => item.entryId !== removedEntry.id);
+	const lastHistoryItem = deck.drawHistory[deck.drawHistory.length - 1];
+	deck.lastDrawEntryId = lastHistoryItem ? lastHistoryItem.entryId : null;
+
+	addLog(`${removedEntry.name} removed from ${deck.name}.`);
+	render();
+}
+
 function drawFromDeck(deckId) {
 	const deck = state.decks.find((entry) => entry.id === deckId);
 
@@ -315,8 +448,8 @@ function drawFromDeck(deckId) {
 		return;
 	}
 
-	if (!state.gameActive) {
-		addLog('Start the game before drawing from a deck.');
+	if (!state.gameActive || state.playDeckId !== deckId) {
+		addLog('Move a deck into the play area before drawing from it.');
 		render();
 		return;
 	}
@@ -345,8 +478,8 @@ function drawFromModule(deckId, entryId) {
 		return;
 	}
 
-	if (!state.gameActive) {
-		addLog('Start the game before drawing from a deck.');
+	if (!state.gameActive || state.playDeckId !== deckId) {
+		addLog('Move a deck into the play area before drawing from it.');
 		render();
 		return;
 	}
@@ -370,6 +503,8 @@ function applyDraw(deck, drawEntry) {
 
 	drawEntry.remainingCount -= 1;
 	deck.lastDrawEntryId = drawEntry.id;
+	deck.drawZoneHue = (Number.isFinite(deck.drawZoneHue) ? deck.drawZoneHue : 200) + 67;
+	deck.drawZoneHue %= 360;
 	deck.drawHistory.push({ entryId: drawEntry.id });
 
 	const remainingInDeck = getDeckRemaining(deck);
@@ -423,12 +558,6 @@ function reshuffleDeck(deckId) {
 		return;
 	}
 
-	if (!getDeckEmpty(deck)) {
-		addLog(`${deck.name} can only be reshuffled when every module is empty.`);
-		render();
-		return;
-	}
-
 	deck.entries = shuffle(
 		deck.entries.map((entry) => ({
 			...entry,
@@ -456,12 +585,30 @@ function removeDeck(deckId) {
 	}
 
 	const [removedDeck] = state.decks.splice(deckIndex, 1);
+	state.openDeckIds = state.openDeckIds.filter((id) => id !== removedDeck.id);
+
+	if (state.playDeckId === removedDeck.id) {
+		state.playDeckId = null;
+	}
+
 	addLog(`${removedDeck.name} removed from the table.`);
 	render();
 }
 
 function getDeckStatus(deck) {
-	if (getDeckEmpty(deck)) {
+	if (deck.id === state.playDeckId) {
+		if (getDeckEmpty(deck)) {
+			return 'Empty';
+		}
+
+		if (getDeckRemaining(deck) === 0) {
+			return 'Ready to reshuffle';
+		}
+
+		return 'In play';
+	}
+
+	if (deck.entries.length === 0 || getDeckEmpty(deck)) {
 		return 'Empty';
 	}
 
@@ -469,13 +616,13 @@ function getDeckStatus(deck) {
 		return 'Ready to reshuffle';
 	}
 
-	return state.gameActive ? 'In play' : 'Built';
+	return 'Built';
 }
 
 function renderModuleCatalogCard(module) {
 	if (state.editingModuleId === module.id) {
 		return `
-			<form class="module-card module-edit-form" data-action="edit-module" data-module-id="${module.id}" style="--accent:${module.color};">
+			<form class="module-card module-edit-form" data-action="edit-module-form" data-module-id="${module.id}" style="--accent:${module.color};">
 				<label>
 					<span>Module name</span>
 					<input name="name" type="text" minlength="2" maxlength="40" value="${escapeHtml(module.name)}" required />
@@ -523,8 +670,11 @@ function renderModuleEntry(deck, entry) {
 	return `
 		<div class="module-entry ${emptyClass} ${clickableClass} ${isLiveDraw ? 'is-target' : ''}" style="--accent:${entry.color};" data-action="draw-module" data-deck-id="${deck.id}" data-entry-id="${entry.id}" role="button" aria-disabled="${state.gameActive && entry.remainingCount > 0 ? 'false' : 'true'}">
 			<div class="module-entry__row">
-				<strong>${escapeHtml(entry.name)}</strong>
-				<span>${entry.remainingCount}/${entry.originalCount}</span>
+				<div class="module-entry__title">
+					<strong>${escapeHtml(entry.name)}</strong>
+					<span>${entry.remainingCount}/${entry.originalCount}</span>
+				</div>
+				<button type="button" class="button button--danger button--small" data-action="remove-module-from-deck" data-deck-id="${deck.id}" data-entry-id="${entry.id}">Remove</button>
 			</div>
 			<div class="module-entry__meter" aria-hidden="true">
 				<span style="width:${entry.originalCount === 0 ? 0 : (entry.remainingCount / entry.originalCount) * 100}%"></span>
@@ -533,7 +683,9 @@ function renderModuleEntry(deck, entry) {
 	`;
 }
 
-function renderDeck(deck, index) {
+function renderDeckCard(deck, index, options = {}) {
+	const { isPlayable = false } = options;
+	const isOpen = isDeckOpen(deck.id);
 	const totalRemaining = getDeckRemaining(deck);
 	const totalOriginal = getDeckOriginal(deck);
 	const canReshuffle = getDeckEmpty(deck);
@@ -547,61 +699,72 @@ function renderDeck(deck, index) {
 	const drawHint = totalRemaining === 0
 		? 'No cards left in this deck'
 		: (lastDrawEntry ? `Last drawn from: ${escapeHtml(lastDrawEntry.name)}` : 'No draw suggestion yet');
+	const playAction = isPlayable ? 'remove-from-play-area' : 'add-to-play-area';
+	const playActionLabel = isPlayable ? 'Remove from play area' : 'Add in play area';
 
 	return `
-		<article class="deck-panel ${canReshuffle ? 'is-exhausted' : ''}" data-deck-id="${deck.id}">
+		<article class="deck-panel ${canReshuffle ? 'is-exhausted' : ''} ${isOpen ? 'is-open' : ''}" data-deck-id="${deck.id}">
 			<div class="deck-panel__header">
-				<div>
-					<p class="deck-panel__eyebrow">Deck ${index + 1}</p>
+				<div class="deck-panel__header-copy">
 					<h3>${escapeHtml(deck.name)}</h3>
+					<span class="pill ${canReshuffle ? 'pill--warning' : 'pill--success'}">${status}</span>
 				</div>
-				<span class="pill ${canReshuffle ? 'pill--warning' : 'pill--success'}">${status}</span>
-			</div>
-
-			<button type="button" class="deck-draw-zone" data-action="draw" data-deck-id="${deck.id}" ${state.gameActive ? '' : 'disabled'}>
-				<span class="deck-draw-zone__label">${state.gameActive ? 'Tap to draw' : 'Start the game first'}</span>
-				<strong>${drawHint}</strong>
-				<span>${totalRemaining} cards remaining from ${deck.entries.length} module${deck.entries.length === 1 ? '' : 's'}</span>
-			</button>
-
-			<div class="deck-stats">
-				<div>
-					<span>Cards</span>
-					<strong>${totalRemaining}</strong>
-				</div>
-				<div>
-					<span>Original total</span>
-					<strong>${totalOriginal}</strong>
-				</div>
-				<div>
-					<span>Modules</span>
-					<strong>${deck.entries.length}</strong>
+				<div class="deck-panel__header-actions">
+					<button type="button" class="button button--primary button--small" data-action="${playAction}" data-deck-id="${deck.id}">${playActionLabel}</button>
+					<button type="button" class="deck-panel__toggle" data-action="toggle-deck" data-deck-id="${deck.id}" aria-label="Toggle ${escapeHtml(deck.name)} deck">
+						<span class="deck-panel__chevron" aria-hidden="true"></span>
+					</button>
 				</div>
 			</div>
 
-			<div class="deck-modules">
-				${deck.entries.length > 0 ? deck.entries.map((entry) => renderModuleEntry(deck, entry)).join('') : '<p class="empty-state">Add a module to this deck to begin building it.</p>'}
-			</div>
+			<div class="deck-panel__content ${isOpen ? '' : 'is-collapsed'}">
+				${isPlayable ? `
+					<button type="button" class="deck-draw-zone" data-action="draw" data-deck-id="${deck.id}" style="--draw-zone-accent:${getDrawZoneAccent(deck)};">
+						<span class="deck-draw-zone__label">Tap to draw</span>
+						<strong>${drawHint}</strong>
+						<span>${totalRemaining} cards remaining from ${deck.entries.length} module${deck.entries.length === 1 ? '' : 's'}</span>
+					</button>
+				` : `<p class="deck-note deck-note--compact">Move this deck into the play area to draw from it.</p>`}
 
-			<form class="deck-form" data-action="add-module" data-deck-id="${deck.id}">
-				<label>
-					<span>Module</span>
-					<select name="moduleId" class="deck-module-select" ${hasCatalogModules ? 'required' : 'disabled'}>
-						${selectOptions}
-					</select>
-				</label>
-				<label>
-					<span>Cards</span>
-					<input name="count" class="deck-module-count" type="number" min="1" value="${state.catalog[0]?.defaultCount ?? 1}" ${hasCatalogModules ? 'required' : 'disabled'} />
-				</label>
-				<button type="submit" class="button button--primary" ${hasCatalogModules ? '' : 'disabled'}>Add module</button>
-			</form>
-			${hasCatalogModules ? '' : '<p class="deck-form__hint">Create a module preset to enable deck composition.</p>'}
+				<div class="deck-stats">
+					<div>
+						<span>Cards</span>
+						<strong>${totalRemaining}</strong>
+					</div>
+					<div>
+						<span>Original total</span>
+						<strong>${totalOriginal}</strong>
+					</div>
+					<div>
+						<span>Modules</span>
+						<strong>${deck.entries.length}</strong>
+					</div>
+				</div>
 
-			<div class="deck-actions">
-				<button type="button" class="button button--ghost" data-action="undo-draw" data-deck-id="${deck.id}" ${canUndo ? '' : 'disabled'}>Undo draw</button>
-				<button type="button" class="button button--ghost" data-action="reshuffle" data-deck-id="${deck.id}" ${canReshuffle ? '' : 'disabled'}>Reshuffle deck</button>
-				<button type="button" class="button button--ghost" data-action="remove-deck" data-deck-id="${deck.id}">Remove deck</button>
+				<div class="deck-modules">
+					${deck.entries.length > 0 ? deck.entries.map((entry) => renderModuleEntry(deck, entry)).join('') : '<p class="empty-state">Add a module to this deck to begin building it.</p>'}
+				</div>
+
+				<form class="deck-form" data-action="add-module" data-deck-id="${deck.id}">
+					<label>
+						<span>Module</span>
+						<select name="moduleId" class="deck-module-select" ${hasCatalogModules ? 'required' : 'disabled'}>
+							${selectOptions}
+						</select>
+					</label>
+					<label>
+						<span>Cards</span>
+						<input name="count" class="deck-module-count" type="number" min="1" value="${state.catalog[0]?.defaultCount ?? 1}" ${hasCatalogModules ? 'required' : 'disabled'} />
+					</label>
+					<button type="submit" class="button button--primary" ${hasCatalogModules ? '' : 'disabled'}>Add module</button>
+				</form>
+				${hasCatalogModules ? '' : '<p class="deck-form__hint">Create a module preset to enable deck composition.</p>'}
+
+				<div class="deck-actions">
+					${isPlayable && canUndo ? `<button type="button" class="button button--primary" data-action="undo-draw" data-deck-id="${deck.id}">Undo draw</button>` : ''}
+					${isPlayable ? '<button type="button" class="button button--primary" data-action="reshuffle" data-deck-id="' + deck.id + '">Reshuffle deck</button>' : ''}
+					${isPlayable ? '' : `<button type="button" class="button button--primary" data-action="remove-deck" data-deck-id="${deck.id}">Remove deck</button>`}
+				</div>
 			</div>
 		</article>
 	`;
@@ -619,8 +782,9 @@ function renderLogItem(item) {
 function render() {
 	const totalCards = state.decks.reduce((sum, deck) => sum + getDeckRemaining(deck), 0);
 	const emptyDecks = state.decks.filter((deck) => getDeckEmpty(deck)).length;
-	const activeDecks = state.decks.filter((deck) => deck.entries.length > 0).length;
-	const latestMessage = state.log[0]?.message ?? 'Create a deck, add modules, and start the game.';
+	const playDeck = getPlayDeck();
+	const deckCards = state.decks.filter((deck) => deck.id !== state.playDeckId);
+	const latestMessage = state.log[0]?.message ?? 'Create a deck, move it into the play area, and add modules.';
 
 	app.innerHTML = `
 		<div class="shell">
@@ -634,19 +798,14 @@ function render() {
 					</p>
 				</div>
 
-				<div class="hero__controls">
-					<button type="button" class="button button--primary" data-action="create-deck">Add deck</button>
-					<button type="button" class="button button--ghost" data-action="start-game" ${state.gameActive ? 'disabled' : ''}>Start game</button>
-				</div>
-
 				<div class="hero__stats" aria-label="Current game summary">
 					<div class="stat-card">
 						<span>Decks</span>
 						<strong>${state.decks.length}</strong>
 					</div>
 					<div class="stat-card">
-						<span>Active decks</span>
-						<strong>${activeDecks}</strong>
+						<span>In play</span>
+						<strong>${playDeck ? 1 : 0}</strong>
 					</div>
 					<div class="stat-card">
 						<span>Cards remaining</span>
@@ -662,51 +821,60 @@ function render() {
 			</header>
 
 			<section class="workspace">
-				<aside class="panel library-panel">
-					<div class="panel-header">
-						<div>
-							<p class="eyebrow">Module library</p>
-							<h2>Create reusable sets</h2>
+				${renderCollapsibleSection(
+					'modules',
+					'Module library',
+					'Modules',
+					`
+						<form class="module-form" data-action="create-module">
+							<label>
+								<span>Module name</span>
+								<input name="name" type="text" minlength="2" maxlength="40" placeholder="Shield Protocol" required />
+							</label>
+							<label>
+								<span>Default cards</span>
+								<input name="cards" type="number" min="1" max="99" value="10" required />
+							</label>
+							<label>
+								<span>Accent color</span>
+								<input name="color" type="color" value="#2c7da0" />
+							</label>
+							<button type="submit" class="button button--primary">Create preset</button>
+						</form>
+
+						<div class="module-grid">
+							${state.catalog.length > 0 ? state.catalog.map((module) => renderModuleCatalogCard(module)).join('') : '<p class="empty-state">No module presets yet. Create one to start composing decks.</p>'}
 						</div>
-					</div>
+					`
+				)}
 
-					<form class="module-form" data-action="create-module">
-						<label>
-							<span>Module name</span>
-							<input name="name" type="text" minlength="2" maxlength="40" placeholder="Shield Protocol" required />
-						</label>
-						<label>
-							<span>Default cards</span>
-							<input name="cards" type="number" min="1" max="99" value="10" required />
-						</label>
-						<label>
-							<span>Accent color</span>
-							<input name="color" type="color" value="#2c7da0" />
-						</label>
-						<button type="submit" class="button button--primary">Create preset</button>
-					</form>
+				${renderCollapsibleSection(
+					'decks',
+					'Deck table',
+					'Decks',
+					`
+						<form class="deck-create-form" data-action="create-deck">
+							<label>
+								<span>Deck name</span>
+								<input name="name" type="text" minlength="2" maxlength="40" placeholder="My first deck" required />
+							</label>
+							<button type="submit" class="button button--primary">Create deck</button>
+						</form>
 
-					<div class="module-grid">
-						${state.catalog.length > 0 ? state.catalog.map((module) => renderModuleCatalogCard(module)).join('') : '<p class="empty-state">No module presets yet. Create one to start composing decks.</p>'}
-					</div>
-				</aside>
-
-				<section class="deck-column">
-					<div class="panel-header panel-header--stacked">
-						<div>
-							<p class="eyebrow">Deck table</p>
-							<h2>Build and play at the same time</h2>
+						<div class="deck-grid">
+							${deckCards.length > 0 ? deckCards.map((deck) => renderDeckCard(deck, state.decks.findIndex((entry) => entry.id === deck.id), { isPlayable: false })).join('') : '<p class="empty-state">No decks in the deck area yet. Create one above.</p>'}
 						</div>
-						<p class="deck-note">
-							Each deck is independent. Add modules mid-game, tap the deck for a random draw or tap a module to force a draw from it,
-							and reshuffle only after every module reaches zero.
-						</p>
-					</div>
+					`
+				)}
 
-					<div class="deck-grid">
-						${state.decks.map((deck, index) => renderDeck(deck, index)).join('')}
-					</div>
-				</section>
+				${renderCollapsibleSection(
+					'play',
+					'Playable deck',
+					'Play Area',
+					playDeck
+						? `<div class="play-area__deck">${renderDeckCard(playDeck, state.decks.findIndex((entry) => entry.id === playDeck.id), { isPlayable: true })}</div>`
+						: '<p class="empty-state">Choose a deck from the Decks section to move it into the play area.</p>'
+				)}
 			</section>
 
 			<section class="panel log-panel">
@@ -716,9 +884,9 @@ function render() {
 						<h2>Recent actions</h2>
 					</div>
 				</div>
-				<ul class="log-list">
-					${state.log.length > 0 ? state.log.map((item) => renderLogItem(item)).join('') : '<li><span>Ready</span><p>Add modules and start the game.</p></li>'}
-				</ul>
+					<ul class="log-list">
+						${state.log.length > 0 ? state.log.map((item) => renderLogItem(item)).join('') : '<li><span>Ready</span><p>Add modules and create a deck.</p></li>'}
+					</ul>
 			</section>
 		</div>
 	`;
@@ -731,15 +899,25 @@ app.addEventListener('click', (event) => {
 	const deckCard = event.target.closest('.deck-panel');
 
 	if (button) {
-		const { action, deckId, moduleId, entryId } = button.dataset;
+		const { action, deckId, moduleId, entryId, section } = button.dataset;
 
-		if (action === 'create-deck') {
-			createDeck();
+		if (action === 'toggle-section' && section) {
+			toggleSection(section);
 			return;
 		}
 
-		if (action === 'start-game') {
-			startGame();
+		if (action === 'toggle-deck' && deckId) {
+			toggleDeck(deckId);
+			return;
+		}
+
+		if (action === 'add-to-play-area' && deckId) {
+			setPlayDeck(deckId);
+			return;
+		}
+
+		if (action === 'remove-from-play-area' && deckId) {
+			clearPlayDeck(deckId);
 			return;
 		}
 
@@ -753,13 +931,26 @@ app.addEventListener('click', (event) => {
 			return;
 		}
 
+		if (action === 'remove-module-from-deck' && deckId && entryId) {
+			const approved = typeof window.confirm !== 'function' ? true : window.confirm('Are you sure you want to remove this module from the deck?');
+
+			if (approved) {
+				removeModuleFromDeck(deckId, entryId);
+			}
+			return;
+		}
+
 		if (action === 'undo-draw' && deckId) {
 			undoDeckDraw(deckId);
 			return;
 		}
 
 		if (action === 'reshuffle' && deckId) {
-			reshuffleDeck(deckId);
+			const approved = typeof window.confirm !== 'function' ? true : window.confirm('Are you sure you want to reshuffle this deck?');
+
+			if (approved) {
+				reshuffleDeck(deckId);
+			}
 			return;
 		}
 
@@ -791,7 +982,7 @@ app.addEventListener('click', (event) => {
 		return;
 	}
 
-	if (deckCard && state.gameActive) {
+	if (deckCard && state.gameActive && deckCard.dataset.deckId === state.playDeckId) {
 		const interactiveTarget = event.target.closest('button, input, select, textarea, label, option');
 
 		if (!interactiveTarget) {
@@ -812,7 +1003,7 @@ app.addEventListener('submit', (event) => {
 
 	event.preventDefault();
 
-	if (form.matches('[data-action="edit-module"]')) {
+	if (form.matches('[data-action="edit-module-form"]')) {
 		const moduleId = form.dataset.moduleId;
 		const formData = new FormData(form);
 		const name = String(formData.get('name') ?? '').trim();
@@ -885,6 +1076,21 @@ app.addEventListener('submit', (event) => {
 		if (countField instanceof HTMLInputElement && defaultModule) {
 			countField.value = String(defaultModule.defaultCount);
 		}
+		return;
+	}
+
+	if (form.matches('[data-action="create-deck"]')) {
+		const formData = new FormData(form);
+		const name = String(formData.get('name') ?? '').trim();
+
+		if (!name) {
+			addLog('Decks need a name before they can be created.');
+			render();
+			return;
+		}
+
+		createDeck(name);
+		form.reset();
 	}
 });
 
@@ -917,5 +1123,5 @@ app.addEventListener('change', (event) => {
 	}
 });
 
-addLog('Create one or more decks, add modules, then start the game.');
+addLog('Create one or more decks, then add modules to build them out.');
 render();
