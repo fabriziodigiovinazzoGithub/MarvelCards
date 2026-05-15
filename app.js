@@ -694,7 +694,7 @@ function renderDeckCard(deck, index, options = {}) {
 	const status = getDeckStatus(deck);
 	const hasCatalogModules = state.catalog.length > 0;
 	const selectOptions = hasCatalogModules
-		? state.catalog.map((module) => `<option value="${module.id}">${escapeHtml(module.name)} (${module.defaultCount})</option>`).join('')
+		? state.catalog.slice().sort((a, b) => a.name.localeCompare(b.name)).map((module) => `<option value="${module.id}">${escapeHtml(module.name)} (${module.defaultCount})</option>`).join('')
 		: '<option value="">No module presets available</option>';
 	const drawHint = totalRemaining === 0
 		? 'No cards left in this deck'
